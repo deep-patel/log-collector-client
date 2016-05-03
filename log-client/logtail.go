@@ -4,7 +4,9 @@ import "fmt"
 import "github.com/hpcloud/tail"
 import "flag"
 import "strconv"
-
+import "github.com/deep-patel/log-collector-client/utils"
+import "errors"
+import "log"
 
 type Job struct {
     LogStr  string
@@ -17,6 +19,13 @@ func NewWorker(id int, workerPool chan chan Job) Worker {
         workerPool: workerPool,
         quitChan:   make(chan bool),
     }
+}
+
+type ClientConfig struct{
+    followFile string
+    maxWorkers int
+    maxQueueSize int
+    multiThread bool
 }
 
 type Worker struct {
@@ -33,6 +42,8 @@ type ServerDetails struct{
 
 var serverDetails ServerDetails
 var jobQueue chan Job
+var clientConfig ClientConfig
+
 func (w Worker) start() {
     go func() {
         for {
@@ -41,7 +52,7 @@ func (w Worker) start() {
 
             select {
             case job := <-w.jobQueue:
-                MakeCall("http://"+serverDetails.host+":"+strconv.Itoa(serverDetails.port)+"/work", job.LogStr)
+                utils.MakeCall("http://"+serverDetails.host+":"+strconv.Itoa(serverDetails.port)+"/work", job.LogStr)
             case <-w.quitChan:
                 fmt.Printf("worker%d stopping\n", w.id)
                 return
@@ -108,15 +119,13 @@ func main() {
     var (
         hostUrl   = flag.String("h", "localhost", "Server host")
         port = flag.Int("p", 9999, "Port of the server")
-        followFile = flag.String("f","","Follow file")
-        maxWorkers   = flag.Int("max_workers", 1, "The number of workers to start")
-        maxQueueSize = flag.Int("max_queue_size", 100, "The size of job queue")
+        configFile = flag.String("c","","Follow file")
     )
     flag.Parse()
 
     error := 0
-    if *followFile==""{
-        fmt.Println("Provide file to be followed. Provide the same using -f <log file location>")
+    if *configFile==""{
+        fmt.Println("Provide configuration file. Provide the same using -c <log file location>")
         error++
     }
 
@@ -124,23 +133,73 @@ func main() {
         return;
     }
 
+    err := validateConfigFile(*configFile)
+    if err != nil{
+        fmt.Println(err)
+        return
+    }
+
     serverDetails = ServerDetails{host: *hostUrl, port: *port}
     // Create the job queue.
-    jobQueue = make(chan Job, *maxQueueSize)
+    jobQueue = make(chan Job, clientConfig.maxQueueSize)
 
     // Start the dispatcher.
-    dispatcher := NewDispatcher(jobQueue, *maxWorkers)
+    dispatcher := NewDispatcher(jobQueue, clientConfig.maxWorkers)
     dispatcher.run()
-	t, err := tail.TailFile("/Users/deep.patel/Documents/test.txt", tail.Config{
+	t, err := tail.TailFile(clientConfig.followFile, tail.Config{
     Follow: true,
     ReOpen: true})
     if err == nil{
     	for line := range t.Lines {
-            MakeCall("http://"+serverDetails.host+":"+strconv.Itoa(serverDetails.port)+"/work", line.Text)
-             //add(line.Text)
+            if clientConfig.multiThread{
+                add(line.Text)
+            } else{
+                utils.MakeCall("http://"+serverDetails.host+":"+strconv.Itoa(serverDetails.port)+"/work", line.Text)
+            }
 		}
     } else{
     	fmt.Println("Error occured")
     	fmt.Println(err);
     }
+}
+
+
+func validateConfigFile(configFileLocation string) error{
+    config := make(map[string]string)
+    err := utils.Load(configFileLocation, config)
+    if err != nil {
+        log.Fatal(err)
+    }
+    fmt.Printf("%v\n", config)
+
+    followFileTemp := config["followfile"]
+    maxWorkerTemp, err1 := strconv.Atoi(config["maxworkers"])
+    maxQueueSizeTemp, err2 := strconv.Atoi(config["maxqueuesize"])
+    multiThreadTemp, err3 := strconv.ParseBool(config["multithread"])
+    
+    if followFileTemp == ""{
+        return errors.New("followFile cannot be empty or nil")
+    }
+    
+    if err1 != nil || maxWorkerTemp <= 0{
+        fmt.Printf("maxWorkers found nil or less than equal to 0. maxWorkers: %d. Inititalizing it to default 5", maxWorkerTemp)
+        maxWorkerTemp = 5
+    }
+    
+
+    if err2 != nil || maxQueueSizeTemp <= 0{
+        fmt.Printf("maxQueueSize found nil or less than equal to 0. maxQueueSize: %d. Inititalizing it to default 100", maxQueueSizeTemp)
+        maxQueueSizeTemp = 100
+    }
+
+    if err3 != nil {
+        fmt.Printf("multiThread found nil. Inititalizing it to default false")
+        multiThreadTemp = false
+    }
+    
+
+    clientConfig = ClientConfig{followFile: followFileTemp, maxWorkers: maxWorkerTemp, maxQueueSize: maxQueueSizeTemp, multiThread: multiThreadTemp}
+
+    return nil
+
 }
