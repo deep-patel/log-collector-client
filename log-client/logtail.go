@@ -147,9 +147,16 @@ func main() {
     dispatcher := NewDispatcher(jobQueue, clientConfig.maxWorkers)
     dispatcher.run()
 	t, err := tail.TailFile(clientConfig.followFile, tail.Config{
-    Follow: true,
-    ReOpen: true})
+                Follow: true,
+                ReOpen: true,
+                Poll : true,
+            })
+    
+    if err != nil {
+        log.Fatalln(err)
+    }
     if err == nil{
+        fmt.Println(t.Lines)
     	for line := range t.Lines {
             if clientConfig.multiThread{
                 add(line.Text)
